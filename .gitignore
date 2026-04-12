@@ -1,0 +1,25 @@
+# 忽略 Python 编译产生的缓存文件
+__pycache__/
+*.py[cod]
+*.class
+
+# 忽略虚拟环境文件夹
+venv/
+.env/
+
+# 忽略数据集、过大的模型权重等
+data/
+*.npy
+*.pt
+*.pth
+*.h5
+
+# 忽略训练日志 (补充加上的)
+logs/
+
+# 忽略 IDE 的配置文件
+.vscode/
+.idea/
+
+# 忽略系统生成的文件
+.DS_Store
