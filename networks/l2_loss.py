@@ -88,7 +88,7 @@ class L2_LOSS(nn.Module):
                 loss = loss.mean(dim=(-1,-2))
                 if get_rank() == 0:
                     self.count+=1
-                    if self.count%100==0:
+                    if self.count%500==0:
                         print_log(f'loss channel weight:{self.logvar.data.squeeze()}', logger='current')
                 return loss.mean()
             

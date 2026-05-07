@@ -181,6 +181,7 @@ class Trainer():
 
         self.iters = 0
         self.startEpoch = 0
+        self.history = {'train_loss': [], 'valid_loss': [], 'z500': [], 'epochs': []}
         if params.resuming:
             logging.info("Loading checkpoint %s"%params.checkpoint_path)
             with torch.no_grad():
@@ -218,8 +219,9 @@ class Trainer():
 
         self.inference = InferenceModule(self.model, self.params, self.valid_dataset, run_mode='valid')
 
-        # --- Initialize history for plotting ---
-        self.history = {'train_loss': [], 'valid_loss': [], 'z500': [], 'epochs': []}
+        # Older checkpoints may not contain history; keep restored history when present.
+        for key in ['train_loss', 'valid_loss', 'z500', 'epochs']:
+            self.history.setdefault(key, [])
 
     def switch_off_grad(self, model):
         for param in model.parameters():
@@ -339,11 +341,9 @@ class Trainer():
                 #logging.info('train data time={}, train step time={}, valid step time={}'.format(data_time, tr_time, valid_time))
                 current_lr = self.optimizer.param_groups[0]['lr']
                 logging.info('Train loss: {}. Valid loss: {}. Learning Rate: {}.'.format(train_logs['loss'], valid_logs['valid_loss'], current_lr))
-                # logging.info(f"Test results of RMSE: z500: {valid_logs['z500']}, t2m: {valid_logs['t2m']}, t850: {valid_logs['t850']}, u10: {valid_logs['u10']}")
-                try:
-                    logging.info(f"Test results of RMSE: z500: {valid_logs['z500']}, q500: {valid_logs['q500']}, u500: {valid_logs['u500']}")
-                except:
-                    logging.info(f"Test results of RMSE: z500: {valid_logs['z500']}, q500: {valid_logs['q500']}")
+                rmse_keys = ['z500', 'q500', 'u500', 'v500', 't500']
+                rmse_summary = ', '.join(f"{key}: {valid_logs[key]}" for key in rmse_keys if key in valid_logs)
+                logging.info(f"Test results of RMSE: {rmse_summary}")
 
             # =========================================================================================
             # [修改说明] 当耐心值耗尽时，安全跳出训练大循环以终止训练
@@ -370,6 +370,8 @@ class Trainer():
         # ====================================================================
         self.accumulate_steps = self.params['accumulate_steps'] if 'accumulate_steps' in self.params else 1
         self.optimizer.zero_grad()
+        train_loss_sum = torch.zeros((), dtype=torch.float32, device=self.device)
+        train_loss_steps = torch.zeros((), dtype=torch.float32, device=self.device)
 
         if self.world_rank == 0:
             logging.info(f"=== 开始第 {self.epoch} 个epoch的训练 ===")
@@ -444,7 +446,7 @@ class Trainer():
 
 
                     ######添加打印loss的代码!!!!!!!!!!!!!!!!!!!!!
-                    if self.world_rank == 0 and i % 50 == 0:  # 每10个batch打印一次
+                    if self.world_rank == 0 and i % 20 == 0:  # 每50个batch打印一次
                         logging.info(f"Epoch {self.epoch}, Batch {i}, Loss: {loss.item():.6f}")
                         
                         # 检查损失是否异常
@@ -479,6 +481,8 @@ class Trainer():
                 # ---------------------- 【原始有 Bug 的代码】 ----------------------
                 # scaled_loss = loss / self.accumulate_steps
                 # ====================================================================
+                train_loss_sum += loss.detach().float()
+                train_loss_steps += 1.0
                 scaled_loss = loss / (self.accumulate_steps * t_out_train)
                 if self.params.enable_amp:
                     self.gscaler.scale(scaled_loss).backward()
@@ -510,16 +514,15 @@ class Trainer():
 
             tr_time += time.time() - tr_start
         
-        try:
-            logs = {'loss': loss, 'loss_step_one': loss_step_one, 'loss_step_two': loss_step_two}
-        except:
-            logs = {'loss': loss}
+        avg_train_loss = train_loss_sum / torch.clamp(train_loss_steps, min=1.0)
+        logs = {'loss': avg_train_loss}
         # 添加epoch结束的总结信息！！！！！！！！！！！！！！！！
         if self.world_rank == 0:
             tr_time += time.time() - tr_start
             # 计算平均训练损失
             logging.info(f"=== 第 {self.epoch} 个epoch训练完成 ===")
             logging.info(f"最终批次损失: {loss.item():.6f}")
+            logging.info(f"Epoch average train loss: {avg_train_loss.item():.6f}")
 
         if dist.is_initialized():
             for key in sorted(logs.keys()):
@@ -651,8 +654,9 @@ class Trainer():
 
             # logs = {'valid_l1': valid_buff_cpu[1], 'valid_loss': valid_buff_cpu[0], 'z500': valid_weighted_rmse_cpu[5], 't2m': valid_weighted_rmse_cpu[-3], 't850': valid_weighted_rmse_cpu[54], 'u10': valid_weighted_rmse_cpu[-2]}
             try:
-                logs = {'valid_l1': valid_buff_cpu[1], 'valid_loss': valid_buff_cpu[0], 'z500': valid_weighted_rmse_cpu[5], 'q500': valid_weighted_rmse_cpu[18], 'u500': valid_weighted_rmse_cpu[31] }
-            except:
+                logs = {'valid_l1': valid_buff_cpu[1], 'valid_loss': valid_buff_cpu[0], 'z500': valid_weighted_rmse_cpu[5], 'q500': valid_weighted_rmse_cpu[18], 'u500': valid_weighted_rmse_cpu[31], 'v500': valid_weighted_rmse_cpu[44], 't500': valid_weighted_rmse_cpu[57]}
+            except IndexError as exc:
+                logging.warning(f"Validation RMSE metrics are incomplete: {exc}")
                 logs = {'valid_l1': valid_buff_cpu[1], 'valid_loss': valid_buff_cpu[0], 'z500': valid_weighted_rmse_cpu[5], 'q500': valid_weighted_rmse_cpu[18]}
 
             for i, name in enumerate(self.surface_features):
